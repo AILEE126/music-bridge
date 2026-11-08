@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>stream bridge</title>
+<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}#p,iframe{display:block;width:100%;height:100%;border:0}</style>
+</head>
+<body>
+<div id="p"></div>
+<script>
+/* 중계 페이지 (GitHub Pages 에 올려 https 주소로 씀 — 개인 데이터 없음)
+   파일로 연 음원 플레이어(file://)는 주소가 없어 유튜브·니코니코 플레이어가 거부함 → 이 페이지가 대신 띄우고,
+   재생 상태·시간을 부모 화면으로 보내고 부모의 명령(재생·멈춤·이동·소리)을 플레이어에 전함.
+   주소: ?yt=<유튜브 영상 번호> 또는 ?nico=<sm…> · &start=<초> · &mute=1 · &vol=<0~100> · &id=<부모가 구분하는 번호> */
+const q = new URLSearchParams(location.search), id = q.get("id") || "";
+const up = m => parent.postMessage({bridge: 1, id, ...m}, "*");  // 부모는 파일로 연 화면 (origin 이 없음) → "*"
+const start = +q.get("start") || 0, startMuted = q.get("mute") === "1", startVol = q.has("vol") ? +q.get("vol") : 100;
+let P = null;  // {play, pause, seek(초), volume(0~100), mute(bool)}
+
+if (q.get("yt")) {
+  const s = document.createElement("script");
+  s.src = "https://www.youtube.com/iframe_api";
+  s.onerror = () => up({ev: "error", code: "api"});
+  document.head.appendChild(s);
+  window.onYouTubeIframeAPIReady = () => {
+    const STATE = {"-1": "buffering", 0: "ended", 1: "playing", 2: "paused", 3: "buffering", 5: "paused"};
+    // youtube-nocookie: 브라우저에 로그인된 유튜브 계정을 쓰지 않음 (다른 곳에서 같은 계정으로 듣는 중이어도 막히지 않게)
+    const y = new YT.Player("p", {host: "https://www.youtube-nocookie.com", videoId: q.get("yt"),
+      playerVars: {autoplay: 1, playsinline: 1, rel: 0, start: Math.floor(start)},
+      events: {
+        onReady: e => {
+          if (startMuted) e.target.mute(); else { e.target.unMute(); e.target.setVolume(startVol); }
+          e.target.playVideo();
+          up({ev: "ready", d: e.target.getDuration()});
+        },
+        onStateChange: e => up({ev: "state", s: STATE[e.data] || "buffering"}),
+        onError: e => up({ev: "error", code: e.data}),  // 2·5·100·101·150: 없는 영상·퍼가기 금지 등
+      }});
+    P = {play: () => y.playVideo(), pause: () => y.pauseVideo(), seek: t => y.seekTo(t, true),
+         volume: v => y.setVolume(v), mute: on => on ? y.mute() : y.unMute()};
+    setInterval(() => { try { if (y.getCurrentTime) up({ev: "time", t: y.getCurrentTime(), d: y.getDuration()}); } catch (e) {} }, 250);
+  };
+} else if (q.get("nico")) {
+  // 니코니코 퍼가기 플레이어 (postMessage 로 조작 — playerId 로 구분)
+  const f = document.createElement("iframe");
+  f.allow = "autoplay; fullscreen";
+  f.src = `https://embed.nicovideo.jp/watch/${encodeURIComponent(q.get("nico"))}?jsapi=1&playerId=b&from=${Math.floor(start)}`;
+  document.getElementById("p").replaceWith(f);
+  const send = (eventName, data) => f.contentWindow.postMessage({eventName, data, playerId: "b", sourceConnectorType: 1}, "https://embed.nicovideo.jp");
+  const STATE = {2: "playing", 3: "paused", 4: "ended"};
+  let dur = 0, started = false;
+  addEventListener("message", e => {
+    if (e.origin !== "https://embed.nicovideo.jp" || !e.data || !e.data.eventName) return;
+    const d = e.data.data || {};
+    switch (e.data.eventName) {
+      case "loadComplete":
+        dur = ((d.videoInfo || {}).lengthInSeconds) || 0;
+        send("commentVisibilityChange", {commentVisibility: false});  // 댓글(弾幕)은 가림
+        if (startMuted) send("mute", {mute: true}); else send("volumeChange", {volume: startVol / 100});
+        if (start) send("seek", {time: start * 1000});
+        send("play");
+        up({ev: "ready", d: dur});
+        break;
+      case "playerStatusChange":
+        if (d.playerStatus === 2) started = true;
+        up({ev: "state", s: STATE[d.playerStatus] || "buffering"});
+        break;
+      case "playerMetadataChange":
+        up({ev: "time", t: (d.currentTime || 0) / 1000, d: dur});
+        break;
+      case "error":
+        up({ev: "error", code: d.code || "error"});
+        break;
+    }
+  });
+  P = {play: () => send("play"), pause: () => send("pause"), seek: t => send("seek", {time: t * 1000}),
+       volume: v => send("volumeChange", {volume: v / 100}), mute: on => send("mute", {mute: on})};
+} else {
+  up({ev: "error", code: "no-video"});
+}
+
+// 부모의 명령 {cmd: play|pause|seek|volume|mute, v}
+addEventListener("message", e => {
+  if (e.source !== parent || !e.data || !e.data.cmd || !P) return;
+  const {cmd, v} = e.data;
+  try { if (cmd === "seek") P.seek(+v); else if (cmd === "volume") P.volume(+v); else if (cmd === "mute") P.mute(!!v); else if (P[cmd]) P[cmd](); } catch (x) {}
+});
+</script>
+</body>
+</html>
