@@ -12,7 +12,8 @@
 /* 중계 페이지 (GitHub Pages 에 올려 https 주소로 씀 — 개인 데이터 없음)
    파일로 연 음원 플레이어(file://)는 주소가 없어 유튜브·니코니코 플레이어가 거부함 → 이 페이지가 대신 띄우고,
    재생 상태·시간을 부모 화면으로 보내고 부모의 명령(재생·멈춤·이동·소리)을 플레이어에 전함.
-   주소: ?yt=<유튜브 영상 번호> 또는 ?nico=<sm…> · &start=<초> · &mute=1 · &vol=<0~100> · &id=<부모가 구분하는 번호> */
+   주소: ?yt=<유튜브 영상 번호> 또는 ?nico=<sm…> · &start=<초> · &mute=1 · &vol=<0~100> · &id=<부모가 구분하는 번호>
+   · &info=1: 니코니코 영상 정보만 알리고 재생하지 않음 (플레이어 곡 정보 줄의 재생수) */
 const q = new URLSearchParams(location.search), id = q.get("id") || "";
 const up = m => parent.postMessage({bridge: 1, id, ...m}, "*");  // 부모는 파일로 연 화면 (origin 이 없음) → "*"
 const start = +q.get("start") || 0, startMuted = q.get("mute") === "1", startVol = q.has("vol") ? +q.get("vol") : 100;
@@ -56,11 +57,12 @@ if (q.get("yt")) {
     switch (e.data.eventName) {
       case "loadComplete":
         dur = ((d.videoInfo || {}).lengthInSeconds) || 0;
+        if (q.get("info")) { up({ev: "info", views: (d.videoInfo || {}).viewCount ?? null}); break; }  // 정보만: 재생 안 함
         send("commentVisibilityChange", {commentVisibility: false});  // 댓글(弾幕)은 가림
         if (startMuted) send("mute", {mute: true}); else send("volumeChange", {volume: startVol / 100});
         if (start) send("seek", {time: start * 1000});
         send("play");
-        up({ev: "ready", d: dur});
+        up({ev: "ready", d: dur, views: (d.videoInfo || {}).viewCount ?? null});  // 재생수 (니코니코 퍼가기 플레이어가 알려 줌)
         break;
       case "playerStatusChange":
         if (d.playerStatus === 2) started = true;
