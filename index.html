@@ -14,9 +14,10 @@
    재생 상태·시간을 부모 화면으로 보내고 부모의 명령(재생·멈춤·이동·소리)을 플레이어에 전함.
    주소: ?yt=<유튜브 영상 번호> 또는 ?nico=<sm…> · &start=<초> · &mute=1 · &vol=<0~100> · &id=<부모가 구분하는 번호>
    · &cmt=0: 니코니코 댓글 끄기 (기본 켬) · 유튜브 자막은 늘 끄고 시작
-   · &info=1: 니코니코 영상 정보만 알리고 재생하지 않음 (플레이어 곡 정보 줄의 재생수) */
+   · &info=1: 니코니코 영상 정보만 알리고 재생하지 않음 (플레이어 곡 정보 줄의 재생수)
+   · cmd load {yt, start, play}: next YouTube song in the same player (reused so playback goes on in a hidden tab) */
 const q = new URLSearchParams(location.search), id = q.get("id") || "";
-const up = m => parent.postMessage({bridge: 1, id, ...m}, "*");  // 부모는 파일로 연 화면 (origin 이 없음) → "*"
+const up = m => parent.postMessage({bridge: 1, ver: 2, id, ...m}, "*");  // ver 2: knows cmd "load"  // 부모는 파일로 연 화면 (origin 이 없음) → "*"
 const start = +q.get("start") || 0, startMuted = q.get("mute") === "1", startVol = q.has("vol") ? +q.get("vol") : 100;
 const comments = q.get("cmt") !== "0";  // 니코니코 댓글: 기본 켬 (&cmt=0 이면 끔)
 let P = null;  // {play, pause, seek(초), volume(0~100), mute(bool), comments(bool — 니코니코만)}
@@ -50,9 +51,19 @@ if (q.get("yt")) {
         },
         onError: e => up({ev: "error", code: e.data}),  // 2·5·100·101·150: 없는 영상·퍼가기 금지 등
       }});
+    // load: next YouTube song in this same player. Chrome defers media in frames created while the tab is hidden
+    // (until shown) → the parent keeps one YouTube bridge and reuses it, so songs go on while the user isn't looking.
+    let want = "";  // video id loaded by "load" — "ready" is sent once its duration is known (state events don't come while folded)
     P = {play: () => y.playVideo(), pause: () => y.pauseVideo(), seek: t => y.seekTo(t, true),
-         volume: v => y.setVolume(v), mute: on => on ? y.mute() : y.unMute()};
-    setInterval(() => { try { if (y.getCurrentTime) up({ev: "time", t: y.getCurrentTime(), d: y.getDuration()}); } catch (e) {} }, 250);
+         volume: v => y.setVolume(v), mute: on => on ? y.mute() : y.unMute(),
+         load: v => { want = v.yt; ccOff = false; const o = {videoId: v.yt, startSeconds: +v.start || 0}; if (v.play) y.loadVideoById(o); else y.cueVideoById(o); }};
+    setInterval(() => {
+      try {
+        if (!y.getCurrentTime) return;
+        if (want && (y.getVideoData() || {}).video_id === want && y.getDuration() > 0) { want = ""; up({ev: "ready", d: y.getDuration()}); }
+        up({ev: "time", t: y.getCurrentTime(), d: y.getDuration()});
+      } catch (e) {}
+    }, 250);
   };
 } else if (q.get("nico")) {
   // 니코니코 퍼가기 플레이어 (postMessage 로 조작 — playerId 로 구분)
@@ -99,7 +110,7 @@ if (q.get("yt")) {
 addEventListener("message", e => {
   if (e.source !== parent || !e.data || !e.data.cmd || !P) return;
   const {cmd, v} = e.data;
-  try { if (cmd === "seek") P.seek(+v); else if (cmd === "volume") P.volume(+v); else if (cmd === "mute" || cmd === "comments") { if (P[cmd]) P[cmd](!!v); } else if (P[cmd]) P[cmd](); } catch (x) {}
+  try { if (cmd === "load") { if (P.load) P.load(v || {}); } else if (cmd === "seek") P.seek(+v); else if (cmd === "volume") P.volume(+v); else if (cmd === "mute" || cmd === "comments") { if (P[cmd]) P[cmd](!!v); } else if (P[cmd]) P[cmd](); } catch (x) {}
 });
 </script>
 </body>
