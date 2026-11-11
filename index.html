@@ -15,9 +15,9 @@
    주소: ?yt=<유튜브 영상 번호> 또는 ?nico=<sm…> · &start=<초> · &mute=1 · &vol=<0~100> · &id=<부모가 구분하는 번호>
    · &cmt=0: 니코니코 댓글 끄기 (기본 켬) · 유튜브 자막은 늘 끄고 시작
    · &info=1: 니코니코 영상 정보만 알리고 재생하지 않음 (플레이어 곡 정보 줄의 재생수)
-   · cmd load {yt, start, play}: next YouTube song in the same player (reused so playback goes on in a hidden tab) */
+   · cmd load {yt|nico, start, play}: next song in the same player (reused so playback goes on in a hidden tab) */
 const q = new URLSearchParams(location.search), id = q.get("id") || "";
-const up = m => parent.postMessage({bridge: 1, ver: 2, id, ...m}, "*");  // ver 2: knows cmd "load"  // 부모는 파일로 연 화면 (origin 이 없음) → "*"
+const up = m => parent.postMessage({bridge: 1, ver: 3, id, ...m}, "*");  // ver 2: cmd "load" (YouTube) · ver 3: also Niconico  // 부모는 파일로 연 화면 (origin 이 없음) → "*"
 const start = +q.get("start") || 0, startMuted = q.get("mute") === "1", startVol = q.has("vol") ? +q.get("vol") : 100;
 const comments = q.get("cmt") !== "0";  // 니코니코 댓글: 기본 켬 (&cmt=0 이면 끔)
 let P = null;  // {play, pause, seek(초), volume(0~100), mute(bool), comments(bool — 니코니코만)}
@@ -67,28 +67,31 @@ if (q.get("yt")) {
   };
 } else if (q.get("nico")) {
   // 니코니코 퍼가기 플레이어 (postMessage 로 조작 — playerId 로 구분)
+  // cmd load {nico, start, play}: next Niconico song in the same embed frame (only its address changes).
+  // User report: in Whale a new Niconico song started while another tab was in front stayed silent → keep one frame that has played.
   const f = document.createElement("iframe");
   f.allow = "autoplay; fullscreen";
-  f.src = `https://embed.nicovideo.jp/watch/${encodeURIComponent(q.get("nico"))}?jsapi=1&playerId=b&from=${Math.floor(start)}`;
+  let cur = {nico: q.get("nico"), start, play: true}, vol = startVol, muted = startMuted, cmt = comments;
+  const url = v => `https://embed.nicovideo.jp/watch/${encodeURIComponent(v.nico)}?jsapi=1&playerId=b&from=${Math.floor(+v.start || 0)}`;
+  f.src = url(cur);
   document.getElementById("p").replaceWith(f);
   const send = (eventName, data) => f.contentWindow.postMessage({eventName, data, playerId: "b", sourceConnectorType: 1}, "https://embed.nicovideo.jp");
   const STATE = {2: "playing", 3: "paused", 4: "ended"};
-  let dur = 0, started = false;
+  let dur = 0;
   addEventListener("message", e => {
-    if (e.origin !== "https://embed.nicovideo.jp" || !e.data || !e.data.eventName) return;
+    if (e.origin !== "https://embed.nicovideo.jp" || e.source !== f.contentWindow || !e.data || !e.data.eventName) return;
     const d = e.data.data || {};
     switch (e.data.eventName) {
       case "loadComplete":
         dur = ((d.videoInfo || {}).lengthInSeconds) || 0;
         if (q.get("info")) { up({ev: "info", views: (d.videoInfo || {}).viewCount ?? null}); break; }  // 정보만: 재생 안 함
-        send("commentVisibilityChange", {commentVisibility: comments});  // 댓글(弾幕) — 플레이어의 💬 댓글 버튼
-        if (startMuted) send("mute", {mute: true}); else send("volumeChange", {volume: startVol / 100});
-        if (start) send("seek", {time: start * 1000});
-        send("play");
-        up({ev: "ready", d: dur, views: (d.videoInfo || {}).viewCount ?? null});  // 재생수 (니코니코 퍼가기 플레이어가 알려 줌)
+        send("commentVisibilityChange", {commentVisibility: cmt});  // 댓글(弾幕) — 플레이어의 💬 댓글 버튼
+        if (muted) send("mute", {mute: true}); else { send("mute", {mute: false}); send("volumeChange", {volume: vol / 100}); }
+        if (cur.start) send("seek", {time: cur.start * 1000});
+        if (cur.play) send("play");
+        up({ev: "ready", d: dur, views: (d.videoInfo || {}).viewCount ?? null, vid: cur.nico});  // 재생수 (니코니코 퍼가기 플레이어가 알려 줌)
         break;
       case "playerStatusChange":
-        if (d.playerStatus === 2) started = true;
         up({ev: "state", s: STATE[d.playerStatus] || "buffering"});
         break;
       case "playerMetadataChange":
@@ -100,8 +103,9 @@ if (q.get("yt")) {
     }
   });
   P = {play: () => send("play"), pause: () => send("pause"), seek: t => send("seek", {time: t * 1000}),
-       volume: v => send("volumeChange", {volume: v / 100}), mute: on => send("mute", {mute: on}),
-       comments: on => send("commentVisibilityChange", {commentVisibility: on})};
+       volume: v => { vol = v; send("volumeChange", {volume: v / 100}); }, mute: on => { muted = on; send("mute", {mute: on}); },
+       comments: on => { cmt = on; send("commentVisibilityChange", {commentVisibility: on}); },
+       load: v => { if (!v.nico) return; cur = {nico: v.nico, start: +v.start || 0, play: !!v.play}; dur = 0; f.src = url(cur); }};
 } else {
   up({ev: "error", code: "no-video"});
 }
